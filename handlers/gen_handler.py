@@ -136,7 +136,7 @@ def generate_cards_via_api(bin_input, count):
 
     # Try API 2 first (supports CVV and more details)
     try:
-        api2_url = f"https://web-production-6341e.up.railway.app/api/ccgenerator?bin={query}&count={count}"
+        api2_url = f"https://web-production-dcb9.up.railway.app/api/ccgenerator?bin={query}&count={count}"
         response = requests.get(api2_url)
 
         if response.status_code == 200:
