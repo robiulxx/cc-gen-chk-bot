@@ -115,7 +115,7 @@ def register(bot: TeleBot):
             for i, video in enumerate(results):
                 title = re.sub(r'[\\/:*?"<>|]', '', video["title"])
                 duration = video.get("duration", "Unknown")
-                msg_text += f"[{i+1}] 🕒 {duration} | {title}\n"
+                msg_text += f"[{i+1}] <b>↯ [{duration}] ↯ [{title}]</b>\n"
 
             markup = InlineKeyboardMarkup(row_width=5)
             buttons = [InlineKeyboardButton(str(i+1), callback_data=f"select_{i}") for i in range(len(results))]
