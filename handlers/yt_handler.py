@@ -1,7 +1,6 @@
 import os
 import re
 import requests
-import subprocess
 from telebot import TeleBot
 from telebot.types import (
     Message,
@@ -18,37 +17,23 @@ DOWNLOAD_API = "https://smartytdl.vercel.app/dl?url="
 user_search_results = {}
 user_sent_messages = {}
 
+# === File download with progress ===
 def download_file(url, filename, bot=None, chat_id=None):
-    try:
-        with requests.get(url, stream=True, timeout=15) as r:
-            r.raise_for_status()
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
-            with open(filename, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        if bot and chat_id:
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        total_size = int(r.headers.get('content-length', 0))
+        with open(filename, "wb") as f:
+            downloaded = 0
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if bot and chat_id and total_size > 0:
+                        percent = (downloaded * 100) // total_size
+                        try:
                             bot.send_chat_action(chat_id, 'upload_document')
-        return True
-    except Exception as e:
-        print(f"[!] Direct download failed: {e}")
-        return False
-
-def fallback_ytdlp(link, filename, audio=False):
-    try:
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        format_str = 'bestaudio[ext=m4a]' if audio else '18'
-        cmd = [
-            "yt-dlp",
-            "-f", format_str,
-            "-o", filename,
-            link
-        ]
-        subprocess.run(cmd, check=True)
-        return True
-    except Exception as e:
-        print(f"[!] yt-dlp fallback failed: {e}")
-        return False
+                        except:
+                            pass
 
 # === Bot Command Register ===
 def register(bot: TeleBot):
@@ -60,72 +45,27 @@ def register(bot: TeleBot):
             bot.reply_to(message, "দয়া করে ইউটিউব সার্চ করার জন্য কিছু লিখুন।\nUsage: /yt <search>")
             return
 
-        query = args[1].strip()
+        query = args[1]
+        resp = requests.get(SEARCH_API + query)
+        data = resp.json()
 
-        # ===== Direct YouTube link handling =====
-        if "youtu" in query:
-            try:
-                res = requests.get(DOWNLOAD_API + query)
-                data = res.json()
-
-                if not data.get("success") or not data.get("title"):
-                    bot.reply_to(message, "❌ ভিডিও ডেটা আনতে সমস্যা হয়েছে।")
-                    return
-
-                title = re.sub(r'[\\/:*?"<>|]', '', data["title"])
-                thumb = data.get("thumbnail")
-                duration = data.get("duration", "Unknown")
-                caption = f"🕒 {duration}\n{title}"
-
-                # Store as search result so callback works
-                user_search_results[message.chat.id] = [{
-                    "title": title,
-                    "imageUrl": thumb,
-                    "duration": duration,
-                    "link": query
-                }]
-
-                markup = InlineKeyboardMarkup()
-                markup.add(
-                    InlineKeyboardButton("🎵 অডিও", callback_data=f"download_0_audio"),
-                    InlineKeyboardButton("🎬 ভিডিও", callback_data=f"download_0_video")
-                )
-
-                sent_msg = bot.send_photo(message.chat.id, photo=thumb, caption=caption, reply_markup=markup)
-                user_sent_messages[message.chat.id] = [sent_msg.message_id]
-
-            except Exception as e:
-                print(f"[YT LINK ERROR] {e}")
-                bot.reply_to(message, "❌ ভিডিও প্রসেস করতে সমস্যা হয়েছে।")
+        if "result" not in data or not data["result"]:
+            bot.reply_to(message, "❌ কোনো রেজাল্ট পাওয়া যায়নি।")
             return
 
-        # ======= Search mode (normal) =======
-        try:
-            resp = requests.get(SEARCH_API + query)
-            data = resp.json()
+        results = data["result"][:10]
+        user_search_results[message.chat.id] = results
 
-            if "result" not in data or not data["result"]:
-                bot.reply_to(message, "❌ কোনো রেজাল্ট পাওয়া যায়নি।")
-                return
+        msg_text = "🔍 সার্চ রেজাল্ট:\n\n"
+        for i, video in enumerate(results):
+            title = re.sub(r'[\\/:*?"<>|]', '', video["title"])
+            duration = video.get("duration", "Unknown")
+            msg_text += f"[{i+1}] 🕒 {duration} | 🎵 {title}\n"
 
-            results = data["result"][:10]
-            user_search_results[message.chat.id] = results
-
-            msg_text = "🔍 সার্চ রেজাল্ট:\n\n"
-            for i, video in enumerate(results):
-                title = re.sub(r'[\\/:*?"<>|]', '', video["title"])
-                duration = video.get("duration", "Unknown")
-                msg_text += f"[{i+1}] <b>↯ [{duration}] ↯ [{title}]</b>\n"
-
-            markup = InlineKeyboardMarkup(row_width=5)
-            buttons = [InlineKeyboardButton(str(i+1), callback_data=f"select_{i}") for i in range(len(results))]
-            markup.add(*buttons)
-            bot.send_message(message.chat.id, msg_text, reply_markup=markup)
-
-        except Exception as e:
-            print(f"[SEARCH ERROR] {e}")
-            bot.reply_to(message, "❌ সার্চ করতে সমস্যা হয়েছে।")
-
+        markup = InlineKeyboardMarkup(row_width=5)
+        buttons = [InlineKeyboardButton(str(i+1), callback_data=f"select_{i}") for i in range(len(results))]
+        markup.add(*buttons)
+        bot.send_message(message.chat.id, msg_text, reply_markup=markup)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("select_"))
     def handle_select(call: CallbackQuery):
@@ -150,6 +90,7 @@ def register(bot: TeleBot):
 
         sent_msg = bot.send_photo(chat_id, photo=thumb_url, caption=caption, reply_markup=markup)
 
+        # Track all sent message ids per user
         if chat_id not in user_sent_messages:
             user_sent_messages[chat_id] = []
         user_sent_messages[chat_id].append(sent_msg.message_id)
@@ -167,6 +108,7 @@ def register(bot: TeleBot):
             bot.answer_callback_query(call.id, "Session expired. Please search again.")
             return
 
+        # ❌ Delete all previous result thumbnails/messages
         for msg_id in user_sent_messages.get(chat_id, []):
             try:
                 bot.delete_message(chat_id, msg_id)
@@ -186,54 +128,41 @@ def register(bot: TeleBot):
             res = requests.get(DOWNLOAD_API + link)
             ddata = res.json()
 
-            if ddata.get("success"):
-                medias = ddata.get("medias", [])
-                media_url = None
+            if not ddata.get("success"):
+                bot.send_message(chat_id, "❌ ডাউনলোড লিঙ্ক পাওয়া যায়নি।")
+                return
 
-                if choice == "audio":
-                    for media in medias:
-                        if media.get("type") == "audio":
-                            media_url = media.get("url")
-                            break
-                else:
-                    # Primary: video with audio and mp4
-                    for media in medias:
-                        if (
-                            media.get("type") == "video"
-                            and media.get("has_audio") == True
-                            and media.get("extension") == "mp4"
-                        ):
-                            media_url = media.get("url")
-                            break
-                    # Fallback: any video with audio
-                    if not media_url:
-                        for media in medias:
-                            if media.get("type") == "video" and media.get("has_audio") == True:
-                                media_url = media.get("url")
-                                break
+            medias = ddata.get("medias", [])
+            media_url = None
 
-                if media_url:
-                    success = download_file(media_url, filename, bot, chat_id)
-                    if not success:
-                        raise Exception("Direct download failed")
-                else:
-                    raise Exception("No valid media URL found")
-            else:
-                raise Exception("API failed")
+            for media in medias:
+                if media["type"] == choice:
+                    if choice == "video" and "480" in media.get("quality", ""):
+                        media_url = media["url"]
+                        break
+                    elif choice == "audio":
+                        media_url = media["url"]
+                        break
 
-        except Exception as e:
-            print(f"[x] Direct method failed: {e}")
-            fallback_ytdlp(link, filename, audio=(choice == "audio"))
+            if not media_url:
+                bot.send_message(chat_id, f"❌ {choice.upper()} ফরম্যাট পাওয়া যায়নি।")
+                return
 
-        try:
+            os.makedirs("downloads", exist_ok=True)
+            download_file(media_url, filename, bot, chat_id)
+
             with open(filename, "rb") as f:
                 if choice == "audio":
                     bot.send_audio(chat_id, f, caption=f"✅ ডাউনলোড সম্পন্ন:\n{title}")
                 else:
                     bot.send_video(chat_id, f, caption=f"✅ ডাউনলোড সম্পন্ন:\n{title}")
+
+            os.remove(filename)
             bot.delete_message(chat_id, wait_msg.message_id)
+
         except Exception as e:
-            bot.send_message(chat_id, f"❌ ফাইল পাঠাতে সমস্যা হয়েছে:\n{str(e)}")
-        finally:
-            if os.path.exists(filename):
-                os.remove(filename)
+            bot.send_message(chat_id, f"⚠️ সমস্যা হয়েছে:\n{str(e)}")
+            try:
+                bot.delete_message(chat_id, wait_msg.message_id)
+            except:
+                pass
